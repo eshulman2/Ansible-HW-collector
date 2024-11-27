@@ -16,37 +16,33 @@
         state: started
 
     - name: Collect NIC models
-      shell: |
-        lshw -class network | awk -F ':' '/product:/{p=$2} /logical name:/{print $2 ": " p","}'
+      command: lshw -class network -json
       register: nic_models
 
     - name: Collect NIC switch port mapping using LLDP
-      shell: |
-        lldpctl -f keyvalue | grep port.ifna | sed -n 's/^lldp\.\(.*\)\.port\.ifname=\(.*\)$/\1: \2/p'
+      command: lldpctl -f json
       register: nic_switch_ports
 
-    - set_fact:
-        nic_details: {}
-
-    - name: Combine NIC models and switch ports
-      set_fact:
-        nic_details: "{{ nic_details | combine({item.key: [item.value, nic_switch_ports_dict[item.key]]}) }}"
-      with_dict: "{{ nic_models_dict }}"
+    - name: Create a dictionary of nic models
       vars:
-        nic_models_dict: >-
-          {%- set dict = {} -%}
-          {%- for line in nic_models.stdout_lines if line.strip() -%}
-          {%- set key, value = line.split(': ', 1) -%}
-          {{ dict.update({key.strip(): value.strip()}) }}
-          {%- endfor -%}
-          {{ dict }}
-        nic_switch_ports_dict: >-
-          {%- set dict = {} -%}
-          {%- for line in nic_switch_ports.stdout_lines if line.strip() -%}
-          {%- set key, value = line.split(': ', 1) -%}
-          {{ dict.update({key.strip(): value.strip()}) }}
-          {%- endfor -%}
-          {{ dict }}
+        models_dict: {}
+      set_fact:
+        models_dict: "{{ models_dict | combine({item.logicalname: {'nic_model':item.product}}) }}"
+      with_items: "{{ nic_models.stdout | from_json }}"
+
+    - name: Create a dictionary of nic switch ports
+      vars:
+        nic_switch_dict: {}
+      set_fact:
+        nic_switch_dict: "{{ nic_switch_dict | combine({item.key: {'switch_name':(item.value.chassis.keys() | list)[0], 'switch_port': item.value.port.id.value}}) }}"
+      with_dict: "{{ (nic_switch_ports.stdout | from_json).lldp.interface }}"
+
+    - name: merge switch port and nic models
+      vars:
+        nic_details: {}
+      set_fact:
+        nic_details: "{{ nic_details | combine({item.key: (item.value | combine(models_dict[item.key]))}) }}"
+      with_dict: "{{ nic_switch_dict }}"
 
     - name: Assemble all collected information
       set_fact:
@@ -59,7 +55,7 @@
 
     - name: Append collected information to a CSV
       lineinfile:
-        path: /tmp/hardware_info_with_lldp.csv
+        path: "{{ csv_path | default('hardware_info.csv') }}"
         line: "{{ host_info }}"
         create: yes
         insertafter: EOF
@@ -70,7 +66,7 @@
   tasks:
     - name: Add CSV header if it's not already present
       lineinfile:
-        path: /tmp/hardware_info_with_lldp.csv
+        path: "{{ csv_path | default('hardware_info.csv') }}"
         line: "Hostname,CPU Cores,CPU Model,RAM,NIC Models and Switch Ports"
         create: yes
         insertbefore: BOF
