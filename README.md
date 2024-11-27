@@ -1,0 +1,1 @@
+# simple ansible HW data collector

@@ -1,0 +1,78 @@
+---
+- name: Collect hardware information with NIC and LLDP details
+  hosts: all
+  gather_facts: yes
+  tasks:
+    - name: Install lldpd
+      package:
+        name:
+        - lldpd
+        - hwloc-gui
+        state: present
+
+    - name: Start lldpd service
+      ansible.builtin.service:
+        name: lldpd
+        state: started
+
+    - name: Collect NIC models
+      shell: |
+        lshw -class network | awk -F ':' '/product:/{p=$2} /logical name:/{print $2 ": " p","}'
+      register: nic_models
+
+    - name: Collect NIC switch port mapping using LLDP
+      shell: |
+        lldpctl -f keyvalue | grep port.ifna | sed -n 's/^lldp\.\(.*\)\.port\.ifname=\(.*\)$/\1: \2/p'
+      register: nic_switch_ports
+
+    - set_fact:
+        nic_details: {}
+
+    - name: Combine NIC models and switch ports
+      set_fact:
+        nic_details: "{{ nic_details | combine({item.key: [item.value, nic_switch_ports_dict[item.key]]}) }}"
+      with_dict: "{{ nic_models_dict }}"
+      vars:
+        nic_models_dict: >-
+          {%- set dict = {} -%}
+          {%- for line in nic_models.stdout_lines if line.strip() -%}
+          {%- set key, value = line.split(': ', 1) -%}
+          {{ dict.update({key.strip(): value.strip()}) }}
+          {%- endfor -%}
+          {{ dict }}
+        nic_switch_ports_dict: >-
+          {%- set dict = {} -%}
+          {%- for line in nic_switch_ports.stdout_lines if line.strip() -%}
+          {%- set key, value = line.split(': ', 1) -%}
+          {{ dict.update({key.strip(): value.strip()}) }}
+          {%- endfor -%}
+          {{ dict }}
+
+    - name: Assemble all collected information
+      set_fact:
+        host_info: >-
+          {{ inventory_hostname }},
+          {{ hostvars[inventory_hostname].ansible_processor_vcpus }},
+          {{ hostvars[inventory_hostname].ansible_processor[2] }},
+          {{ hostvars[inventory_hostname].ansible_memtotal_mb }},
+          {{ nic_details }}
+
+    - name: Append collected information to a CSV
+      lineinfile:
+        path: /tmp/hardware_info_with_lldp.csv
+        line: "{{ host_info }}"
+        create: yes
+        insertafter: EOF
+      delegate_to: localhost
+
+- name: Add header to CSV
+  hosts: localhost
+  tasks:
+    - name: Add CSV header if it's not already present
+      lineinfile:
+        path: /tmp/hardware_info_with_lldp.csv
+        line: "Hostname,CPU Cores,CPU Model,RAM,NIC Models and Switch Ports"
+        create: yes
+        insertbefore: BOF
+        state: present
+      delegate_to: localhost
