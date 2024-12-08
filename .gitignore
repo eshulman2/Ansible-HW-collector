@@ -1,1 +1,4 @@
 inventory
+*.png
+*.csv
+.vscode
