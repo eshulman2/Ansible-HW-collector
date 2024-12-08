@@ -15,6 +15,11 @@
         name: lldpd
         state: started
 
+    - name: Create topology png
+      ansible.builtin.shell:
+        cmd: |
+          lstopo --output-format png > /tmp/{{ inventory_hostname }}.png
+
     - name: Collect NIC models
       command: lshw -class network -json
       register: nic_models
@@ -44,6 +49,13 @@
         nic_details: "{{ nic_details | combine({item.key: (item.value | combine(models_dict[item.key]))}) }}"
       with_dict: "{{ nic_switch_dict }}"
 
+    - name: Set disk details
+      vars:
+        disk_details: {}
+      set_fact:
+        disk_details: "{{ disk_details | combine({item.key: item.value.size}) }}"
+      with_dict: "{{ hostvars[inventory_hostname].ansible_devices }}"
+
     - name: Assemble all collected information
       set_fact:
         host_info: >-
@@ -51,7 +63,20 @@
           {{ hostvars[inventory_hostname].ansible_processor_vcpus }},
           {{ hostvars[inventory_hostname].ansible_processor[2] }},
           {{ hostvars[inventory_hostname].ansible_memtotal_mb }},
-          {{ nic_details }}
+          {{ nic_details }},
+          {{ disk_details }}
+
+    - name: Make sure paths exist
+      file:
+        state: directory
+        path: "{{ image_path | default('images') }}"
+      delegate_to: localhost
+
+    - name: Fetch lstopo output
+      fetch:
+        src: /tmp/{{ inventory_hostname }}.png
+        dest: "{{ image_path | default('images') }}/"
+        flat: yes
 
     - name: Append collected information to a CSV
       lineinfile:
@@ -67,7 +92,7 @@
     - name: Add CSV header if it's not already present
       lineinfile:
         path: "{{ csv_path | default('hardware_info.csv') }}"
-        line: "Hostname,CPU Cores,CPU Model,RAM,NIC Models and Switch Ports"
+        line: "Hostname,CPU Cores,CPU Model,RAM,NIC Models and Switch Ports,Disks"
         create: yes
         insertbefore: BOF
         state: present
